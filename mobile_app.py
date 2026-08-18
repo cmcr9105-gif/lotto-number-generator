@@ -5,7 +5,7 @@ from pathlib import Path
 
 from analytics import load_file, frequency_table, absence_table, pair_frequency, summary
 from generator import generate_candidates, select_diverse_top
-from updater import fetch_latest_official
+from updater import fetch_latest_official, fetch_recent_official
 from personalizer import birth_based_weights, favorite_numbers_from_birth
 from db import (
     init_db, upsert_draws, upsert_latest, load_draws,
@@ -67,7 +67,7 @@ div[data-testid="stMetric"] {
 """, unsafe_allow_html=True)
 
 st.title("🎯 로또당첨번호 생성기")
-st.caption("5단계 · 휴대폰 최적화 버전")
+st.caption("6단계 · 자동업데이트 모바일 버전")
 st.info("통계점수·사주 개인화는 실제 당첨확률이 아닙니다.")
 
 with st.expander("⚙️ 데이터 관리", expanded=False):
@@ -82,20 +82,48 @@ with st.expander("⚙️ 데이터 관리", expanded=False):
         except Exception as e:
             st.error(f"파일 오류: {e}")
 
-    if st.button("🔄 공식 최신 회차 확인·저장", key="official_update"):
-        try:
-            latest = fetch_latest_official()
-            upsert_latest(latest, DB_PATH)
-            check_matches(DB_PATH)
-            st.success(f"{latest['회차']}회 저장 완료")
-            st.rerun()
-        except Exception as e:
-            st.error(f"자동 확인 실패: {e}")
-            st.caption("동행복권 공식 CSV/XLSX 업로드 방식으로 계속 사용할 수 있습니다.")
+    c_up1, c_up2 = st.columns(2)
+    with c_up1:
+        if st.button("🔄 최신 1회 자동저장", key="official_update", use_container_width=True):
+            try:
+                latest = fetch_latest_official()
+                upsert_latest(latest, DB_PATH)
+                check_matches(DB_PATH)
+                st.success(f"{latest['회차']}회 저장 완료")
+                st.rerun()
+            except Exception as e:
+                st.error(f"최신회차 자동조회 실패: {e}")
+
+    with c_up2:
+        if st.button("📚 최근 200회 자동구축", key="bootstrap_200", use_container_width=True):
+            prog = st.progress(0)
+            status = st.empty()
+            try:
+                def _progress(done, total, draw_no):
+                    prog.progress(min(1.0, done / total))
+                    status.caption(f"{draw_no}회 확인 중 · {done}/{total}")
+                rows = fetch_recent_official(count=200, progress=_progress)
+                auto_df = pd.DataFrame(rows)
+                if "추첨일" not in auto_df.columns:
+                    auto_df["추첨일"] = pd.NaT
+                auto_df = auto_df[["회차","추첨일","번호1","번호2","번호3","번호4","번호5","번호6","보너스"]]
+                n = upsert_draws(auto_df, DB_PATH, source="official-auto")
+                check_matches(DB_PATH)
+                prog.progress(1.0)
+                status.success(f"공식 데이터 {n}개 회차 저장/갱신 완료")
+                st.rerun()
+            except Exception as e:
+                prog.empty()
+                status.empty()
+                st.error(f"자동구축 실패: {e}")
+                st.caption("이 경우 공식 CSV/XLSX 업로드 방식은 계속 사용할 수 있습니다.")
+
+    st.caption("자동조회는 날짜로 완료 회차를 계산한 뒤 여러 공식 주소를 순차 검증합니다.")
 
 df = load_draws(DB_PATH)
 if df.empty:
-    st.warning("처음 한 번은 위 '데이터 관리'에서 과거 당첨번호 파일을 넣어주세요.")
+    st.warning("DB가 비어 있습니다. 위 '데이터 관리'에서 **최근 200회 자동구축**을 먼저 눌러보세요.")
+    st.caption("자동구축이 막히면 CSV/XLSX 업로드를 사용하면 됩니다.")
     st.stop()
 
 latest_draw = int(df["회차"].max())
