@@ -1,6 +1,7 @@
 
 import streamlit as st
 import pandas as pd
+import gc
 from datetime import date
 from pathlib import Path
 
@@ -47,7 +48,7 @@ div[data-testid="stMetric"] {border:1px solid rgba(128,128,128,.20); border-radi
 """, unsafe_allow_html=True)
 
 st.title("🎯 로또당첨번호 생성기")
-st.caption("안정화 점검판 · 데이터 저장 후에도 화면이 유지되도록 수정")
+st.caption("9단계 안정화 2차 · 번호 추출 시 하얀 화면 방지 구조 적용")
 
 # DB 초기화/복구
 try:
@@ -179,18 +180,20 @@ if len(df) < 10:
 
 st.markdown("### 2. 번호 생성")
 
-tab_gen, tab_stats, tab_result, tab_perf = st.tabs(
-    ["🎲 번호 생성","📊 번호 분석","🏆 당첨 확인","📈 성과"]
+section = st.radio(
+    "기능 선택",
+    ["🎲 번호 생성", "📊 번호 분석", "🏆 당첨 확인", "📈 성과"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="main_section",
 )
 
-with tab_gen:
+if section == "🎲 번호 생성":
     strategy = st.selectbox("생성 방식", ["혼합형","균형형","빈도형","미출현형","완전랜덤"])
     c1, c2 = st.columns(2)
     games = c1.selectbox("게임 수", [5,10,15,20], index=0)
-    # 모바일/Streamlit Cloud 안정성을 위해 메모리 사용량을 제한한다.
-    # 1,000~3,000개면 5~20게임 선별에는 충분하며, 5천/1만 개 일괄 생성은
-    # 저사양 컨테이너에서 프로세스 재시작(화면 소실)의 원인이 될 수 있다.
-    candidates_n = c2.selectbox("분석 후보 수", [500,1000,2000,3000], index=1)
+    # Streamlit Cloud 안정성을 위해 한 번에 만드는 후보 수를 제한한다.
+    candidates_n = c2.selectbox("분석 후보 수", [500,1000,1500,2000], index=1)
 
     include, exclude, max_overlap = [], [], 3
     personal_on, personal_weights = False, None
@@ -207,55 +210,57 @@ with tab_gen:
                 st.caption("개인화 선호수: " + " · ".join(map(str, favorite_numbers_from_birth(birth_text))))
 
     if st.button("🎯 이번 회차 번호 추출", type="primary", use_container_width=True):
-        # 생성 중 문제가 생겨도 이전 결과/화면은 그대로 유지한다.
         old_records = st.session_state.get("last_pick_records")
         old_meta = st.session_state.get("last_meta")
+        cand = None
+        picks_df = None
         try:
-            # 비정상적으로 큰 값이 세션에 남아 있어도 강제로 안전 범위로 제한
-            safe_candidates_n = max(100, min(int(candidates_n), 3000))
-            cand, _ = generate_candidates(
-                df, strategy, safe_candidates_n, seed=None,
-                include=include, exclude=exclude,
-                personal_weights=personal_weights
-            )
-            if cand is None or cand.empty:
-                raise ValueError("후보번호가 만들어지지 않았습니다. 제외번호 설정을 줄여주세요.")
+            with st.spinner("이번 회차 추천번호를 계산하고 있습니다..."):
+                safe_candidates_n = max(100, min(int(candidates_n), 2000))
+                cand, _ = generate_candidates(
+                    df, strategy, safe_candidates_n, seed=None,
+                    include=include, exclude=exclude,
+                    personal_weights=personal_weights
+                )
+                if cand is None or cand.empty:
+                    raise ValueError("후보번호가 만들어지지 않았습니다. 제외번호 설정을 줄여주세요.")
 
-            picks_df = select_diverse_top(cand, games, max_overlap)
-            if picks_df is None or picks_df.empty:
-                raise ValueError("추천번호를 선택하지 못했습니다.")
+                picks_df = select_diverse_top(cand, games, max_overlap)
+                if picks_df is None or picks_df.empty:
+                    raise ValueError("추천번호를 선택하지 못했습니다.")
 
-            # 중요: DataFrame을 session_state에 직접 보관하지 않는다.
-            # Streamlit Cloud 세션 직렬화/재시작 안정성을 위해 plain dict/list로 변환한다.
-            records = []
-            for _, r in picks_df.iterrows():
-                records.append({
-                    "게임": int(r["게임"]),
-                    "추천번호": str(r["추천번호"]),
-                    "점수": float(r["점수"]),
-                    "합계": int(r["합계"]),
-                    "홀수": int(r.get("홀수", 0)),
-                    "저번호": int(r.get("저번호", 0)),
-                    "연속쌍": int(r.get("연속쌍", 0)),
-                })
+                records = []
+                for _, r in picks_df.iterrows():
+                    records.append({
+                        "게임": int(r["게임"]),
+                        "추천번호": str(r["추천번호"]),
+                        "점수": float(r["점수"]),
+                        "합계": int(r["합계"]),
+                        "홀수": int(r.get("홀수", 0)),
+                        "저번호": int(r.get("저번호", 0)),
+                        "연속쌍": int(r.get("연속쌍", 0)),
+                    })
 
-            st.session_state["last_pick_records"] = records
-            st.session_state["last_meta"] = {
-                "target_draw": int(latest_draw + 1),
-                "strategy": str(strategy),
-                "birth_mode": bool(personal_on),
-                "include": [int(x) for x in include],
-                "exclude": [int(x) for x in exclude],
-            }
-            st.session_state.pop("generation_error", None)
-            # 큰 후보 DataFrame은 여기서 더 이상 세션에 남기지 않는다.
-            del cand, picks_df
+                st.session_state["last_pick_records"] = records
+                st.session_state["last_meta"] = {
+                    "target_draw": int(latest_draw + 1),
+                    "strategy": str(strategy),
+                    "birth_mode": bool(personal_on),
+                    "include": [int(x) for x in include],
+                    "exclude": [int(x) for x in exclude],
+                }
+                st.session_state.pop("generation_error", None)
         except Exception as e:
             if old_records is not None:
                 st.session_state["last_pick_records"] = old_records
             if old_meta is not None:
                 st.session_state["last_meta"] = old_meta
             st.session_state["generation_error"] = str(e)
+        finally:
+            # 큰 임시 DataFrame을 즉시 해제해 모바일/Cloud 메모리 피크를 낮춘다.
+            cand = None
+            picks_df = None
+            gc.collect()
 
     if st.session_state.get("generation_error"):
         st.error(f"번호 생성 오류: {st.session_state['generation_error']}")
@@ -282,6 +287,7 @@ with tab_gen:
 
     records = st.session_state.get("last_pick_records", [])
     if records:
+        st.success(f"{len(records)}게임 추출 완료")
         for row in records:
             try:
                 nums = [x.strip() for x in str(row.get("추천번호", "")).split("·") if x.strip()]
@@ -309,7 +315,8 @@ with tab_gen:
             except Exception as e:
                 st.error(f"추천번호 저장 오류: {e}")
 
-with tab_stats:
+elif section == "📊 번호 분석":
+    # 중요: 탭과 달리 이 화면을 선택했을 때만 통계 계산을 실행한다.
     try:
         period = st.selectbox("분석 기간", ["최근10회","최근30회","최근50회","최근100회","전체"])
         freq = frequency_table(df)
@@ -324,7 +331,7 @@ with tab_stats:
     except Exception as e:
         st.warning(f"통계 화면을 만들지 못했습니다: {e}")
 
-with tab_result:
+elif section == "🏆 당첨 확인":
     if st.button("🔍 저장번호 당첨대조", use_container_width=True):
         try:
             st.success(f"{check_matches(DB_PATH)}건 확인 완료")
@@ -339,7 +346,7 @@ with tab_result:
     except Exception as e:
         st.warning(f"당첨 기록을 읽지 못했습니다: {e}")
 
-with tab_perf:
+elif section == "📈 성과":
     try:
         perf = performance_by_strategy(DB_PATH)
         if perf.empty:
