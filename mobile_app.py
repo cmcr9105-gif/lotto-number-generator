@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from analytics import load_file, frequency_table, absence_table, pair_frequency
-from generator import generate_candidates, select_diverse_top
+from generator import safe_generate_games
 from updater import fetch_latest_official
 from personalizer import birth_based_weights, favorite_numbers_from_birth
 from db import (
@@ -48,7 +48,7 @@ div[data-testid="stMetric"] {border:1px solid rgba(128,128,128,.20); border-radi
 """, unsafe_allow_html=True)
 
 st.title("🎯 로또당첨번호 생성기")
-st.caption("9단계 안정화 2차 · 번호 추출 시 하얀 화면 방지 구조 적용")
+st.caption("9단계 안정화 3차 · 초경량 번호추출 + 진단로그 적용")
 
 # DB 초기화/복구
 try:
@@ -212,34 +212,30 @@ if section == "🎲 번호 생성":
     if st.button("🎯 이번 회차 번호 추출", type="primary", use_container_width=True):
         old_records = st.session_state.get("last_pick_records")
         old_meta = st.session_state.get("last_meta")
-        cand = None
-        picks_df = None
+        log_path = Path("lotto_generation_diag.log")
+
+        def diag(msg):
+            try:
+                from datetime import datetime
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now().isoformat(timespec='seconds')} | {msg}\n")
+            except Exception:
+                pass
+
         try:
+            diag("CLICK_START")
+            diag(f"DATA_ROWS={len(df)} STRATEGY={strategy} GAMES={games}")
             with st.spinner("이번 회차 추천번호를 계산하고 있습니다..."):
-                safe_candidates_n = max(100, min(int(candidates_n), 2000))
-                cand, _ = generate_candidates(
-                    df, strategy, safe_candidates_n, seed=None,
+                diag("SAFE_GENERATOR_START")
+                records = safe_generate_games(
+                    df, strategy=strategy, n_games=int(games), seed=None,
                     include=include, exclude=exclude,
-                    personal_weights=personal_weights
+                    personal_weights=personal_weights, max_overlap=int(max_overlap),
+                    sample_size=320
                 )
-                if cand is None or cand.empty:
-                    raise ValueError("후보번호가 만들어지지 않았습니다. 제외번호 설정을 줄여주세요.")
-
-                picks_df = select_diverse_top(cand, games, max_overlap)
-                if picks_df is None or picks_df.empty:
+                diag(f"SAFE_GENERATOR_DONE RECORDS={len(records)}")
+                if not records:
                     raise ValueError("추천번호를 선택하지 못했습니다.")
-
-                records = []
-                for _, r in picks_df.iterrows():
-                    records.append({
-                        "게임": int(r["게임"]),
-                        "추천번호": str(r["추천번호"]),
-                        "점수": float(r["점수"]),
-                        "합계": int(r["합계"]),
-                        "홀수": int(r.get("홀수", 0)),
-                        "저번호": int(r.get("저번호", 0)),
-                        "연속쌍": int(r.get("연속쌍", 0)),
-                    })
 
                 st.session_state["last_pick_records"] = records
                 st.session_state["last_meta"] = {
@@ -250,17 +246,14 @@ if section == "🎲 번호 생성":
                     "exclude": [int(x) for x in exclude],
                 }
                 st.session_state.pop("generation_error", None)
+                diag("SESSION_SAVE_DONE")
         except Exception as e:
+            diag(f"ERROR={type(e).__name__}: {e}")
             if old_records is not None:
                 st.session_state["last_pick_records"] = old_records
             if old_meta is not None:
                 st.session_state["last_meta"] = old_meta
-            st.session_state["generation_error"] = str(e)
-        finally:
-            # 큰 임시 DataFrame을 즉시 해제해 모바일/Cloud 메모리 피크를 낮춘다.
-            cand = None
-            picks_df = None
-            gc.collect()
+            st.session_state["generation_error"] = f"{type(e).__name__}: {e}"
 
     if st.session_state.get("generation_error"):
         st.error(f"번호 생성 오류: {st.session_state['generation_error']}")
@@ -356,6 +349,17 @@ elif section == "📈 성과":
             st.bar_chart(perf.set_index("전략")["평균일치"])
     except Exception as e:
         st.warning(f"성과 화면을 만들지 못했습니다: {e}")
+
+with st.expander("🧪 번호추출 진단 로그", expanded=False):
+    diag_file = Path("lotto_generation_diag.log")
+    if diag_file.exists():
+        try:
+            lines = diag_file.read_text(encoding="utf-8").splitlines()[-20:]
+            st.code("\n".join(lines) if lines else "로그 없음")
+        except Exception as e:
+            st.caption(f"로그 읽기 실패: {e}")
+    else:
+        st.caption("아직 번호추출 로그가 없습니다.")
 
 st.markdown("---")
 st.caption("※ 통계점수·생년월일 개인화는 실제 당첨확률을 의미하지 않습니다.")
