@@ -24,7 +24,7 @@ st.set_page_config(
 )
 
 st.title("🎯 로또당첨번호 생성기")
-st.caption("9단계 복구판 v4 · 세션상태/강제 rerun 제거")
+st.caption("9단계 모바일 안전판 v6 · 표 렌더링 제거")
 
 # -------------------------
 # DB boot: no session_state, no rerun
@@ -116,11 +116,9 @@ with st.expander("📁 과거 당첨번호 파일 업로드", expanded=False):
             st.error(f"파일 처리 오류: {type(exc).__name__}: {exc}")
 
 if df.empty:
-    st.info("당첨번호 데이터가 없습니다. 최신 회차를 직접 입력하거나 과거 파일을 업로드하세요.")
-    st.stop()
-
-if len(df) < 10:
-    st.warning(f"현재 {len(df)}회 데이터만 있습니다. 기능은 작동하지만 통계 의미는 제한적입니다.")
+    st.warning("당첨번호 DB가 비어 있습니다. 번호 추출 버튼은 계속 사용할 수 있으며, 데이터가 없을 때는 자동으로 완전랜덤 방식으로 생성합니다.")
+elif len(df) < 10:
+    st.warning(f"현재 {len(df)}회 데이터만 있습니다. 번호 생성은 가능하지만 통계 의미는 제한적입니다.")
 
 st.markdown("### 2. 번호 생성")
 section = st.selectbox(
@@ -129,7 +127,10 @@ section = st.selectbox(
 )
 
 if section == "🎲 번호 생성":
-    strategy = st.selectbox("생성 방식", ["혼합형", "균형형", "빈도형", "미출현형", "완전랜덤"])
+    strategy_options = ["혼합형", "균형형", "빈도형", "미출현형", "완전랜덤"] if not df.empty else ["완전랜덤"]
+    strategy = st.selectbox("생성 방식", strategy_options)
+    if df.empty:
+        st.caption("현재 저장된 당첨 데이터가 없어 통계형 전략은 잠시 비활성화되었습니다.")
     games = st.selectbox("게임 수", [5, 10, 15, 20], index=0)
     include, exclude, max_overlap = [], [], 3
     personal_on, personal_weights = False, None
@@ -185,17 +186,34 @@ if section == "🎲 번호 생성":
         if latest_saved.empty:
             st.caption("아직 저장된 추천번호가 없습니다.")
         else:
-            st.dataframe(latest_saved, hide_index=True, use_container_width=True)
+            # 모바일 앱/WebView 안정성을 위해 st.dataframe을 사용하지 않는다.
+            # 번호 추출 직후 표 렌더링이 프런트엔드를 멈추는 경우를 피한다.
+            for _, rec in latest_saved.head(10).iterrows():
+                target = int(rec["대상회차"]) if pd.notna(rec["대상회차"]) else 0
+                strategy_text = str(rec["전략"])
+                numbers_text = str(rec["추천번호"])
+                score_text = float(rec["점수"]) if pd.notna(rec["점수"]) else 0.0
+                st.write(f"**{target}회 · {strategy_text}**  |  {numbers_text}  |  점수 {score_text:.1f}")
     except Exception as exc:
         st.warning(f"저장 추천번호 조회 오류: {type(exc).__name__}: {exc}")
 
 elif section == "📊 번호 분석":
+    if df.empty:
+        st.info("분석할 당첨번호 데이터가 없습니다. 먼저 당첨결과를 저장하거나 업로드해 주세요.")
+        st.stop()
     try:
         period = st.selectbox("분석 기간", ["최근10회", "최근30회", "최근50회", "최근100회", "전체"])
         freq = frequency_table(df)
         st.bar_chart(freq.set_index("번호")[period])
-        st.dataframe(absence_table(df).sort_values("미출현회차", ascending=False).head(15), hide_index=True, use_container_width=True)
-        st.dataframe(pair_frequency(df, 15), hide_index=True, use_container_width=True)
+        absence = absence_table(df).sort_values("미출현회차", ascending=False).head(15)
+        st.markdown("#### 장기 미출현 번호")
+        for _, r in absence.iterrows():
+            st.write(f"번호 {int(r['번호'])} · 미출현 {int(r['미출현회차'])}회")
+        pairs = pair_frequency(df, 15)
+        st.markdown("#### 자주 함께 나온 번호")
+        for _, r in pairs.iterrows():
+            vals = list(r.values)
+            st.write(" · ".join(str(v) for v in vals))
     except Exception as exc:
         st.error(f"번호 분석 오류: {type(exc).__name__}: {exc}")
 
@@ -210,7 +228,9 @@ elif section == "🏆 당첨 확인":
         if hist.empty:
             st.info("대조 가능한 저장번호가 없습니다.")
         else:
-            st.dataframe(hist, hide_index=True, use_container_width=True)
+            for _, r in hist.head(50).iterrows():
+                rank = "미당첨" if pd.isna(r.get("등수")) else f"{int(r['등수'])}등"
+                st.write(f"**{int(r['대상회차'])}회** · {r['추천번호']} · 본번호 {int(r['본번호일치'])}개 · {rank}")
     except Exception as exc:
         st.error(f"당첨 기록 오류: {type(exc).__name__}: {exc}")
 
@@ -220,7 +240,8 @@ else:
         if perf.empty:
             st.info("추천번호와 실제 결과가 쌓이면 표시됩니다.")
         else:
-            st.dataframe(perf, hide_index=True, use_container_width=True)
+            for _, r in perf.iterrows():
+                st.write(f"**{r['전략']}** · 검증 {int(r['검증게임수'])}게임 · 평균일치 {float(r['평균일치']):.3f} · 최고 {int(r['최고일치'])}개")
     except Exception as exc:
         st.error(f"성과 조회 오류: {type(exc).__name__}: {exc}")
 
