@@ -24,7 +24,7 @@ st.set_page_config(
 )
 
 st.title("🎯 로또당첨번호 생성기")
-st.caption("9단계 모바일 안전판 v6 · 표 렌더링 제거")
+st.caption("9단계 모바일 텍스트입력 안정화판 v8 · 숫자 위젯 제거")
 
 # -------------------------
 # DB boot: no session_state, no rerun
@@ -63,7 +63,7 @@ c3.metric("최근 저장번호", rec_count)
 st.markdown("### 1. 당첨결과 데이터")
 
 with st.expander("🔄 자동조회(보조 기능)", expanded=False):
-    if st.button("최신 회차 자동확인", use_container_width=True):
+    if st.button("최신 회차 자동확인", width="stretch"):
         try:
             latest = fetch_latest_official()
             upsert_latest(latest, DB_PATH)
@@ -75,30 +75,53 @@ with st.expander("🔄 자동조회(보조 기능)", expanded=False):
 
 with st.expander("✍️ 최신 당첨결과 직접 입력", expanded=df.empty):
     default_draw = latest_draw + 1 if latest_draw else 1
-    draw_no = st.number_input("회차", min_value=1, value=default_draw, step=1)
-    draw_date = st.date_input("추첨일", value=date.today())
-    nums = [
-        st.number_input(f"번호 {i}", min_value=1, max_value=45, value=i, key=f"manual_n{i}")
-        for i in range(1, 7)
-    ]
-    bonus = st.number_input("보너스 번호", min_value=1, max_value=45, value=7)
 
-    if st.button("✅ 당첨결과 저장", type="primary", use_container_width=True):
+    # v8 mobile-safe input: avoid st.number_input/date_input entirely.
+    # Some mobile WebView environments can fail while interacting with numeric widgets.
+    # Text fields are buffered inside the form and parsed only on submit.
+    with st.form("manual_draw_form_v8", clear_on_submit=False):
+        draw_no_text = st.text_input("회차", value=str(default_draw), key="draw_no_text_v8")
+        draw_date_text = st.text_input(
+            "추첨일 (YYYY-MM-DD)", value=date.today().isoformat(), key="draw_date_text_v8"
+        )
+        numbers_text = st.text_input(
+            "당첨번호 6개", placeholder="예: 3, 8, 14, 22, 31, 41", key="numbers_text_v8"
+        )
+        bonus_text = st.text_input("보너스 번호", placeholder="예: 17", key="bonus_text_v8")
+        save_manual = st.form_submit_button("✅ 당첨결과 저장", type="primary", width="stretch")
+
+    st.caption("모바일 안정화를 위해 숫자 입력칸 대신 한 줄 텍스트 입력을 사용합니다.")
+
+    if save_manual:
         try:
-            clean = sorted(int(x) for x in nums)
-            b = int(bonus)
+            import re
+            draw_no = int(str(draw_no_text).strip())
+            if draw_no < 1:
+                raise ValueError("회차는 1 이상이어야 합니다.")
+            parsed_date = pd.to_datetime(str(draw_date_text).strip(), format="%Y-%m-%d", errors="raise")
+            tokens = [x for x in re.split(r"[\s,./·-]+", str(numbers_text).strip()) if x]
+            if len(tokens) != 6:
+                raise ValueError("당첨번호는 정확히 6개 입력해 주세요. 예: 3, 8, 14, 22, 31, 41")
+            clean = sorted(int(x) for x in tokens)
+            b = int(str(bonus_text).strip())
+            if any(n < 1 or n > 45 for n in clean) or not (1 <= b <= 45):
+                raise ValueError("모든 번호는 1~45 범위여야 합니다.")
             if len(set(clean)) != 6:
                 raise ValueError("당첨번호 6개는 서로 달라야 합니다.")
             if b in clean:
                 raise ValueError("보너스 번호는 당첨번호와 달라야 합니다.")
             row = pd.DataFrame([{
-                "회차": int(draw_no), "추첨일": pd.to_datetime(draw_date),
+                "회차": draw_no, "추첨일": parsed_date,
                 **{f"번호{i+1}": clean[i] for i in range(6)}, "보너스": b,
             }])
             upsert_draws(row, DB_PATH, source="manual")
-            matched = check_matches(DB_PATH)
-            st.success(f"{int(draw_no)}회 저장 완료 · {matched}건 당첨대조")
-            st.info("강제 재실행을 하지 않도록 변경했습니다. 상단 수치는 다음 조작 때 갱신됩니다.")
+            try:
+                matched = check_matches(DB_PATH)
+                match_msg = f" · {matched}건 당첨대조"
+            except Exception as match_exc:
+                match_msg = ""
+                st.warning(f"당첨결과는 저장됐지만 과거 추천번호 대조 중 오류: {type(match_exc).__name__}: {match_exc}")
+            st.success(f"{draw_no}회 저장 완료{match_msg}")
         except Exception as exc:
             st.error(f"저장 오류: {type(exc).__name__}: {exc}")
 
@@ -108,7 +131,7 @@ with st.expander("📁 과거 당첨번호 파일 업로드", expanded=False):
         try:
             udf = load_file(uploaded)
             st.write(f"읽은 회차: {len(udf)}개")
-            if st.button("업로드 자료 저장", use_container_width=True):
+            if st.button("업로드 자료 저장", width="stretch"):
                 n = upsert_draws(udf, DB_PATH, source="upload")
                 matched = check_matches(DB_PATH)
                 st.success(f"{n}개 회차 저장/갱신 완료 · {matched}건 당첨대조")
@@ -146,7 +169,7 @@ if section == "🎲 번호 생성":
                 personal_weights = birth_based_weights(birth_text)
                 st.caption("개인화 선호수: " + " · ".join(map(str, favorite_numbers_from_birth(birth_text))))
 
-    if st.button("🎯 이번 회차 번호 추출", type="primary", use_container_width=True):
+    if st.button("🎯 이번 회차 번호 추출", type="primary", width="stretch"):
         try:
             # No session_state, no file logging, no st.rerun.
             records = safe_generate_games(
@@ -218,7 +241,7 @@ elif section == "📊 번호 분석":
         st.error(f"번호 분석 오류: {type(exc).__name__}: {exc}")
 
 elif section == "🏆 당첨 확인":
-    if st.button("🔍 저장번호 당첨대조", use_container_width=True):
+    if st.button("🔍 저장번호 당첨대조", width="stretch"):
         try:
             st.success(f"{check_matches(DB_PATH)}건 확인 완료")
         except Exception as exc:

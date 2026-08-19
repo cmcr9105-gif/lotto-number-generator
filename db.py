@@ -45,21 +45,28 @@ CREATE INDEX IF NOT EXISTS idx_rec_strategy ON recommendations(strategy);
 """
 
 def connect(db_path=DEFAULT_DB):
+    """Open an ordinary DB connection only.
+
+    IMPORTANT: Do not create schema or change journal mode here. Streamlit reruns
+    the script on widget interaction; doing DDL/PRAGMA journal changes on every
+    read connection can cause unnecessary locks and instability.
+    """
     con = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
     con.execute("PRAGMA foreign_keys = ON")
     con.execute("PRAGMA busy_timeout = 10000")
-    # Streamlit Cloud의 단일 사용자 MVP에서는 WAL보다 단순한 DELETE가 복구가 쉬움
-    try:
-        con.execute("PRAGMA journal_mode = DELETE")
-    except Exception:
-        pass
-    con.executescript(SCHEMA)
     return con
 
 def init_db(db_path=DEFAULT_DB):
+    """Create/upgrade schema once during app boot."""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with connect(db_path):
-        pass
+    con = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
+    try:
+        con.execute("PRAGMA foreign_keys = ON")
+        con.execute("PRAGMA busy_timeout = 10000")
+        con.executescript(SCHEMA)
+        con.commit()
+    finally:
+        con.close()
     return db_path
 
 def db_health(db_path=DEFAULT_DB):
