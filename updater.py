@@ -14,10 +14,13 @@ KST = timezone(timedelta(hours=9))
 DRAW1_DATE = date(2002, 12, 7)
 
 OFFICIAL_ENDPOINTS = [
+    # 동행복권 신형 결과 조회 경로 후보
+    "https://www.dhlottery.co.kr/lt645/selectPstLt645InfoNew.do?srchDir=center&srchLtEpsd={draw_no}",
+    # 구형/호환 경로
     "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={draw_no}",
     "https://www.dhlottery.co.kr/gameResult.do?method=byWin&drwNo={draw_no}",
+    "https://m.dhlottery.co.kr/gameResult.do?method=byWin&drwNo={draw_no}",
     "https://www.dhlottery.co.kr/lt645/result?drawNo={draw_no}",
-    "https://www.dhlottery.co.kr/lt645/result?result=byWin&drawNo={draw_no}",
 ]
 
 HEADERS = {
@@ -62,7 +65,92 @@ def _validate(draw: dict) -> dict:
         out["추첨일"] = str(draw["추첨일"])
     return out
 
+
+def _walk_dicts(obj):
+    """중첩 JSON 안의 dict를 모두 순회합니다."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk_dicts(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_dicts(v)
+
+def _parse_new_json_shape(payload, requested_draw: int) -> Optional[dict]:
+    """신형 동행복권 응답의 여러 키 형태를 유연하게 해석합니다."""
+    for d in _walk_dicts(payload):
+        draw_no = (
+            d.get("ltEpsd") or d.get("epsd") or d.get("drawNo") or
+            d.get("drwNo") or d.get("round")
+        )
+        if draw_no is None:
+            continue
+        try:
+            if int(draw_no) != int(requested_draw):
+                continue
+        except Exception:
+            continue
+
+        # 리스트 형태
+        list_candidates = [
+            d.get("winNum"), d.get("winNums"), d.get("lottoNum"),
+            d.get("lottoNums"), d.get("winningNumbers"), d.get("numbers")
+        ]
+        main = None
+        for cand in list_candidates:
+            if isinstance(cand, list) and len(cand) >= 6:
+                try:
+                    nums = [int(x) for x in cand[:6]]
+                    if len(set(nums)) == 6 and all(1 <= n <= 45 for n in nums):
+                        main = nums
+                        break
+                except Exception:
+                    pass
+
+        # 개별 키 형태
+        if main is None:
+            key_sets = [
+                [f"lottoNo{i}" for i in range(1,7)],
+                [f"drwtNo{i}" for i in range(1,7)],
+                [f"winNo{i}" for i in range(1,7)],
+                [f"rankNo{i}" for i in range(1,7)],
+            ]
+            for keys in key_sets:
+                if all(k in d for k in keys):
+                    try:
+                        nums = [int(d[k]) for k in keys]
+                        if len(set(nums)) == 6 and all(1 <= n <= 45 for n in nums):
+                            main = nums
+                            break
+                    except Exception:
+                        pass
+
+        if main is None:
+            continue
+
+        bonus = (
+            d.get("bonusNo") or d.get("bnusNo") or d.get("bonus") or
+            d.get("bonusNum") or d.get("bnsNo")
+        )
+        if bonus is None:
+            continue
+
+        draw = {"회차": int(requested_draw), "보너스": int(bonus)}
+        for i, n in enumerate(main, 1):
+            draw[f"번호{i}"] = n
+        draw_date = d.get("ltRflYmd") or d.get("drawDate") or d.get("drwNoDate")
+        if draw_date:
+            draw["추첨일"] = str(draw_date)
+        try:
+            return _validate(draw)
+        except Exception:
+            continue
+    return None
+
 def _parse_json_payload(payload, requested_draw: int) -> Optional[dict]:
+    newer = _parse_new_json_shape(payload, requested_draw)
+    if newer:
+        return newer
     if not isinstance(payload, dict):
         return None
     draw_no = payload.get("drwNo") or payload.get("drawNo") or payload.get("round")
