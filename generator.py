@@ -82,7 +82,7 @@ def combination_features(nums):
         "최대간격": max(gaps),
     }
 
-def score_combination(nums, number_score_map, ref, strategy="혼합형"):
+def score_combination(nums, number_score_map, ref, strategy="혼합형", rng=None):
     feats = combination_features(nums)
 
     # 번호 자체 점수
@@ -111,7 +111,7 @@ def score_combination(nums, number_score_map, ref, strategy="혼합형"):
         consec_score = 0.55
 
     if strategy == "완전랜덤":
-        total = random.random()
+        total = (rng or random).random()
     else:
         total = (
             ns*0.35 +
@@ -177,7 +177,7 @@ def generate_candidates(df: pd.DataFrame, strategy="혼합형", n_candidates=100
         if nums in seen:
             continue
         seen.add(nums)
-        sc, feats = score_combination(nums, score_map, ref, strategy)
+        sc, feats = score_combination(nums, score_map, ref, strategy, rng=rng)
         rows.append({
             "번호1":nums[0],"번호2":nums[1],"번호3":nums[2],
             "번호4":nums[3],"번호5":nums[4],"번호6":nums[5],
