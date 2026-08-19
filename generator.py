@@ -39,7 +39,11 @@ def build_number_scores(df: pd.DataFrame, strategy: str="혼합형") -> pd.DataF
     return score[["번호","번호점수","전체","최근100회","최근50회","최근30회","최근10회","미출현회차"]]
 
 def _pattern_reference(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {"sum_low": 100.0, "sum_high": 180.0, "odd_mode": 3, "low_mode": 3, "consecutive_rate": 0.5}
     patt = draw_pattern_table(df)
+    if patt.empty:
+        return {"sum_low": 100.0, "sum_high": 180.0, "odd_mode": 3, "low_mode": 3, "consecutive_rate": 0.5}
     sums = patt["합계"]
     q1, q3 = sums.quantile([0.15,0.85])
     return {
@@ -180,6 +184,12 @@ def generate_candidates(df: pd.DataFrame, strategy="혼합형", n_candidates=100
             "점수":sc, **feats
         })
 
+    if not rows:
+        return pd.DataFrame(columns=[
+            "번호1","번호2","번호3","번호4","번호5","번호6","점수","합계",
+            "홀수개수","저번호개수","연속번호쌍","최대구간집중","동일끝수최대",
+            "평균간격","최소간격","최대간격"
+        ]), scores
     out = pd.DataFrame(rows).sort_values("점수", ascending=False).reset_index(drop=True)
     return out, scores
 
